@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Em PR, cancela rodadas anteriores ao novo push (economiza CI minutes).
+  # Em main, mantém todas: cada commit precisa ser validado.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Repo sem build: o risco que sobra é segredo commitado. "Security scan" e
+  # "CI passed" são required no ruleset "main protegida (org)", que vale para
+  # todo repo da org, então os dois nomes não podem mudar.
+  security:
+    name: Security scan
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Binário direto em vez da action oficial: a action exige licença de
+      # organização, o binário não.
+      - name: Install gitleaks
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | tar -xz gitleaks
+
+      # SEM continue-on-error: segredo de verdade tem que quebrar o job.
+      - name: Scan for secrets
+        run: ./gitleaks detect --no-git --config .gitleaks.toml --redact --no-banner -v
+
+  ci-ok:
+    name: CI passed
+    needs: [security]
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    if: always()
+    steps:
+      - name: Verify required jobs
+        run: |
+          result="${{ needs.security.result }}"
+          [ "$result" = "success" ] || { echo "  ✗ security ($result)" >&2; exit 1; }
+          echo "  ✓ security ($result)"
+          echo "CI OK"

@@ -1,0 +1,4 @@
+# Regras padrão do gitleaks. Falso positivo entra aqui como allowlist, com o
+# motivo ao lado, nunca como continue-on-error no CI.
+[extend]
+useDefault = true
