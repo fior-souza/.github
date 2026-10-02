@@ -17,15 +17,17 @@ permissions:
   contents: read
 
 jobs:
-  # Repo sem build: o risco que sobra é segredo commitado. "Security scan" e
-  # "CI passed" são required no ruleset "main protegida (org)", que vale para
-  # todo repo da org, então os dois nomes não podem mudar.
+  # "Security scan" e "CI passed" são required no ruleset "main protegida
+  # (org)", que vale para todo repo da org, então os dois nomes não podem mudar.
   security:
     name: Security scan
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Histórico inteiro: a varredura dos commits do PR precisa da base.
+          fetch-depth: 0
 
       # Binário direto em vez da action oficial: a action exige licença de
       # organização, o binário não.
@@ -38,6 +40,16 @@ jobs:
       - name: Scan for secrets
         run: ./gitleaks detect --no-git --config .gitleaks.toml --redact --no-banner -v
 
+      # A árvore final não mostra o segredo que entrou num commit e saiu no
+      # seguinte. Com merge commit, esse commit chega à main do mesmo jeito,
+      # então o PR também varre os próprios commits.
+      - name: Scan PR commits for secrets
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./gitleaks detect --config .gitleaks.toml --redact --no-banner -v --log-opts="$BASE_SHA..$HEAD_SHA"
+
   ci-ok:
     name: CI passed
     needs: [security]
@@ -46,7 +58,13 @@ jobs:
     steps:
       - name: Verify required jobs
         run: |
-          result="${{ needs.security.result }}"
-          [ "$result" = "success" ] || { echo "  ✗ security ($result)" >&2; exit 1; }
-          echo "  ✓ security ($result)"
-          echo "CI OK"
+          ok() {
+            case "$2" in
+              success) echo "  ✓ $1 ($2)" ;;
+              *) echo "  ✗ $1 ($2)" >&2; return 1 ;;
+            esac
+          }
+          status=0
+          ok "security" "${{ needs.security.result }}" || status=1
+          [ "$status" -eq 0 ] && echo "CI OK"
+          exit $status
